@@ -28,13 +28,17 @@ const isOverdue = (d) => {
 };
 
 export default function TaskTracker() {
-  const [tasks, setTasks] = useState([
-    { id: 1, text: "Сделать презентацию", description: "Подготовить слайды для встречи с клиентом", category: "work", priority: "high", deadline: "2026-02-25", done: false, calendarEventId: null, completedAt: null },
-    { id: 2, text: "Пробежка 5 км", description: "", category: "health", priority: "medium", deadline: "2026-02-22", done: false, calendarEventId: null, completedAt: null },
-    { id: 3, text: "Прочитать главу книги", description: "", category: "study", priority: "low", deadline: null, done: true, calendarEventId: null, completedAt: "2026-02-20" },
-    { id: 4, text: "Утренняя пробежка", description: "", category: "sport", priority: "medium", deadline: null, done: true, calendarEventId: null, completedAt: "2026-02-19" },
-    { id: 5, text: "Подтягивания 3 подхода", description: "", category: "sport", priority: "low", deadline: null, done: false, calendarEventId: null, completedAt: null },
-  ]);
+  const [tasks, setTasks] = useState(() => {
+    try {
+      const saved = localStorage.getItem("tasks");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem("tasks", JSON.stringify(tasks)); } catch {}
+  }, [tasks]);
 
   const [showForm, setShowForm] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
