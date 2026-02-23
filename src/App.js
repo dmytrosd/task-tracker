@@ -80,7 +80,7 @@ export default function TaskTracker() {
   const [newTask, setNewTask] = useState({ text: "", description: "", category: "work", priority: "medium", deadline: "" });
   const [tab, setTab] = useState("tasks");
   const [toast, setToast] = useState(null);
-  const [syncingId, setSyncingId] = useState(null);
+
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
