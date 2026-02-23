@@ -1,7 +1,21 @@
 import { useState, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, where } from "firebase/firestore";
 
-const CLIENT_ID = "1063965843339-2jc6ukp1ae5raild4e7rqq2pqns88fr2.apps.googleusercontent.com";
-const SCOPES = "https://www.googleapis.com/auth/calendar.events";
+const firebaseConfig = {
+  apiKey: "AIzaSyAgkyPiKGkDzhqsLIFOwvk90eUtObeZ9IE",
+  authDomain: "task-tracker-7144b.firebaseapp.com",
+  projectId: "task-tracker-7144b",
+  storageBucket: "task-tracker-7144b.firebasestorage.app",
+  messagingSenderId: "723378599233",
+  appId: "1:723378599233:web:ff32d2dcd6e3acf78c1dc0",
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
 
 const CATEGORIES = [
   { id: "work", label: "Работа", color: "#FF6B35", emoji: "💼" },
@@ -27,130 +41,111 @@ const isOverdue = (d) => {
   return new Date(d) < new Date() && new Date(d).toDateString() !== new Date().toDateString();
 };
 
+// Экран входа
+function LoginScreen({ onLogin }) {
+  return (
+    <div style={{ fontFamily: "'DM Sans', sans-serif", background: "#0F0F14", minHeight: "100vh", display: "flex", justifyContent: "center", alignItems: "center" }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+      <div style={{ textAlign: "center", padding: "40px 24px" }}>
+        <div style={{ fontSize: 56, marginBottom: 16 }}>📋</div>
+        <div style={{ color: "#F0F0F8", fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Task Tracker</div>
+        <div style={{ color: "#5A5A72", fontSize: 15, marginBottom: 40, fontFamily: "'DM Mono', monospace" }}>Твои задачи всегда под рукой</div>
+        <button onClick={onLogin} style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "14px 28px",
+          background: "#1A1A24", border: "1px solid #2A2A38", borderRadius: 16,
+          color: "#F0F0F8", fontSize: 16, fontWeight: 600, cursor: "pointer",
+          fontFamily: "'DM Sans', sans-serif", margin: "0 auto", transition: "border-color 0.2s"
+        }}>
+          <svg width="20" height="20" viewBox="0 0 24 24">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          Войти через Google
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function TaskTracker() {
-  const [tasks, setTasks] = useState(() => {
-    try {
-      const saved = localStorage.getItem("tasks");
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [];
-  });
-
-  useEffect(() => {
-    try { localStorage.setItem("tasks", JSON.stringify(tasks)); } catch {}
-  }, [tasks]);
-
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [tasks, setTasks] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [selectedTask, setSelectedTask] = useState(null);
   const [filter, setFilter] = useState("all");
   const [archiveFilter, setArchiveFilter] = useState("all");
   const [newTask, setNewTask] = useState({ text: "", description: "", category: "work", priority: "medium", deadline: "" });
   const [tab, setTab] = useState("tasks");
-
-  const [googleUser, setGoogleUser] = useState(null);
-  const [accessToken, setAccessToken] = useState(null);
-  const [syncingId, setSyncingId] = useState(null);
   const [toast, setToast] = useState(null);
-  const [gisReady, setGisReady] = useState(false);
-  const [tokenClient, setTokenClient] = useState(null);
+  const [syncingId, setSyncingId] = useState(null);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
 
+  // Следим за авторизацией
   useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.onload = () => setGisReady(true);
-    document.head.appendChild(script);
-    return () => document.head.removeChild(script);
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+    return unsub;
   }, []);
 
+  // Загружаем задачи из Firestore когда пользователь вошёл
   useEffect(() => {
-    if (!gisReady || !window.google) return;
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-      callback: (response) => {
-        if (response.error) { showToast("Ошибка авторизации", "error"); return; }
-        setAccessToken(response.access_token);
-        fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-          headers: { Authorization: `Bearer ${response.access_token}` },
-        }).then(r => r.json()).then(info => {
-          setGoogleUser(info);
-          showToast(`Привет, ${info.given_name}! 👋`);
-        });
-      },
+    if (!user) { setTasks([]); return; }
+    const q = query(collection(db, "tasks"), where("uid", "==", user.uid));
+    const unsub = onSnapshot(q, (snap) => {
+      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
-    setTokenClient(client);
-  }, [gisReady]);
+    return unsub;
+  }, [user]);
 
-  const handleLogin = () => { if (tokenClient) tokenClient.requestAccessToken(); };
-  const handleLogout = () => {
-    if (accessToken && window.google) window.google.accounts.oauth2.revoke(accessToken);
-    setAccessToken(null); setGoogleUser(null);
+  const handleLogin = async () => {
+    try { await signInWithPopup(auth, provider); }
+    catch (e) { showToast("Ошибка входа", "error"); }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
     showToast("Вышли из аккаунта");
   };
 
-  const addToCalendar = async (task) => {
-    if (!accessToken) { showToast("Сначала войди в Google", "error"); return; }
-    if (!task.deadline) { showToast("Добавь дедлайн к задаче", "error"); return; }
-    setSyncingId(task.id);
-    const c = CATEGORIES.find(x => x.id === task.category);
-    const p = PRIORITIES.find(x => x.id === task.priority);
-    const event = {
-      summary: `${c?.emoji} ${task.text}`,
-      description: `${task.description ? task.description + "\n\n" : ""}Приоритет: ${p?.label}\nКатегория: ${c?.label}\n\nДобавлено из Task Tracker`,
-      start: { date: task.deadline },
-      end: { date: task.deadline },
-      colorId: task.priority === "high" ? "11" : task.priority === "medium" ? "5" : "2",
-    };
-    try {
-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(event),
-      });
-      if (res.status === 401) { setAccessToken(null); setGoogleUser(null); showToast("Сессия истекла", "error"); return; }
-      const data = await res.json();
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, calendarEventId: data.id } : t));
-      showToast("Добавлено в Google Calendar! 📅");
-    } catch { showToast("Ошибка при добавлении", "error"); }
-    finally { setSyncingId(null); }
-  };
-
-  const removeFromCalendar = async (task) => {
-    if (!accessToken || !task.calendarEventId) return;
-    setSyncingId(task.id);
-    try {
-      await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${task.calendarEventId}`,
-        { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } });
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, calendarEventId: null } : t));
-      showToast("Удалено из Google Calendar");
-    } catch { showToast("Ошибка при удалении", "error"); }
-    finally { setSyncingId(null); }
-  };
-
-  const addTask = () => {
+  const addTask = async () => {
     if (!newTask.text.trim()) return;
-    setTasks([...tasks, { ...newTask, id: Date.now(), done: false, deadline: newTask.deadline || null, calendarEventId: null, completedAt: null }]);
+    await addDoc(collection(db, "tasks"), {
+      ...newTask,
+      uid: user.uid,
+      done: false,
+      deadline: newTask.deadline || null,
+      calendarEventId: null,
+      completedAt: null,
+      createdAt: new Date().toISOString(),
+    });
     setNewTask({ text: "", description: "", category: "work", priority: "medium", deadline: "" });
     setShowForm(false);
   };
 
-  const toggleDone = (id) => {
-    setTasks(prev => prev.map(t =>
-      t.id === id ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString().split("T")[0] : null } : t
-    ));
+  const toggleDone = async (task) => {
+    const newDone = !task.done;
+    await updateDoc(doc(db, "tasks", task.id), {
+      done: newDone,
+      completedAt: newDone ? new Date().toISOString().split("T")[0] : null,
+    });
   };
 
-  const deleteTask = (id) => {
-    setTasks(tasks.filter(t => t.id !== id));
+  const deleteTask = async (id) => {
+    await deleteDoc(doc(db, "tasks", id));
     if (selectedTask?.id === id) setSelectedTask(null);
   };
+
+  const cat = (id) => CATEGORIES.find(c => c.id === id);
+  const pri = (id) => PRIORITIES.find(p => p.id === id);
 
   const activeTasks = tasks.filter(t => !t.done && (filter === "all" || t.category === filter));
   const doneTasks = tasks.filter(t => t.done && (archiveFilter === "all" || t.category === archiveFilter));
@@ -163,18 +158,22 @@ export default function TaskTracker() {
   }, {});
   const archiveDates = Object.keys(groupedArchive).sort((a, b) => b.localeCompare(a));
 
-  const cat = (id) => CATEGORIES.find(c => c.id === id);
-  const pri = (id) => PRIORITIES.find(p => p.id === id);
-
-  // всегда берём свежую версию задачи из стейта
   const liveTask = selectedTask ? tasks.find(t => t.id === selectedTask.id) : null;
+
+  if (authLoading) return (
+    <div style={{ background: "#0F0F14", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ color: "#5A5A72", fontFamily: "sans-serif" }}>Загрузка...</div>
+    </div>
+  );
+
+  if (!user) return <LoginScreen onLogin={handleLogin} />;
 
   return (
     <div style={{ fontFamily: "'DM Sans', sans-serif", background: "#0F0F14", minHeight: "100vh", display: "flex", justifyContent: "center" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
       <style>{`
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        .phone { width: 390px; min-height: 100vh; background: #0F0F14; display: flex; flex-direction: column; overflow: hidden; }
+        .phone { width: 390px; min-height: 100vh; background: #0F0F14; display: flex; flex-direction: column; }
         .header { padding: 52px 24px 16px; }
         .header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
         .greeting { color: #5A5A72; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-family: 'DM Mono', monospace; }
@@ -183,9 +182,9 @@ export default function TaskTracker() {
         .stat { flex: 1; background: #1A1A24; border-radius: 16px; padding: 14px 16px; }
         .stat-num { font-size: 24px; font-weight: 700; color: #F0F0F8; }
         .stat-label { font-size: 11px; color: #5A5A72; margin-top: 2px; font-family: 'DM Mono', monospace; }
-        .google-btn { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 100px; border: 1px solid #2A2A38; background: #1A1A24; color: #F0F0F8; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.2s; white-space: nowrap; }
-        .google-btn:hover { border-color: #FF6B35; }
-        .google-avatar { width: 22px; height: 22px; border-radius: 50%; }
+        .user-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 100px; border: 1px solid #2A2A38; background: #1A1A24; color: #F0F0F8; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+        .user-btn:hover { border-color: #FF6B35; }
+        .user-avatar { width: 22px; height: 22px; border-radius: 50%; }
         .filters { display: flex; gap: 8px; padding: 0 24px 16px; overflow-x: auto; scrollbar-width: none; }
         .filters::-webkit-scrollbar { display: none; }
         .chip { padding: 8px 14px; border-radius: 100px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; transition: all 0.2s; }
@@ -208,7 +207,6 @@ export default function TaskTracker() {
         .task-actions { display: flex; flex-direction: column; gap: 6px; }
         .icon-btn { width: 28px; height: 28px; border-radius: 8px; background: #22222E; border: none; color: #5A5A72; cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.2s; }
         .icon-btn:hover { background: #2A2A38; color: #F0F0F8; }
-        .icon-btn-synced { background: #1A3A2A; color: #6EE7B7; }
         .fab { position: fixed; bottom: 32px; right: calc(50% - 195px + 24px); width: 56px; height: 56px; border-radius: 18px; background: linear-gradient(135deg, #FF6B35, #FF85A1); border: none; color: white; font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 24px rgba(255,107,53,0.4); transition: transform 0.2s; z-index: 10; }
         .fab:active { transform: scale(0.93); }
         .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
@@ -233,19 +231,15 @@ export default function TaskTracker() {
         .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); padding: 12px 20px; border-radius: 14px; font-size: 14px; font-weight: 600; z-index: 100; white-space: nowrap; }
         .toast-success { background: #1A3A2A; color: #6EE7B7; border: 1px solid #2A4A3A; }
         .toast-error { background: #3A1A1A; color: #F87171; border: 1px solid #4A2A2A; }
-        .gcal-banner { margin: 0 24px 16px; background: #1A2A3A; border: 1px solid #2A3A4A; border-radius: 14px; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
-        .gcal-banner-text { font-size: 13px; color: #7ABAFF; flex: 1; }
         .archive-date-header { color: #5A5A72; font-size: 11px; font-family: 'DM Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase; padding: 8px 0 6px; display: flex; align-items: center; gap: 8px; }
         .archive-date-header::after { content: ''; flex: 1; height: 1px; background: #22222E; }
         .archive-stats { margin: 0 24px 12px; background: #1A2A1A; border: 1px solid #2A3A2A; border-radius: 14px; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
         .archive-stats-text { font-size: 13px; color: #6EE7B7; }
         .restore-btn { padding: 4px 10px; border-radius: 8px; background: #22222E; border: none; color: #5A5A72; cursor: pointer; font-size: 11px; font-weight: 600; font-family: 'DM Sans', sans-serif; transition: all 0.2s; white-space: nowrap; }
         .restore-btn:hover { background: #2A3A2A; color: #6EE7B7; }
-        .spinning { animation: spin 1s linear infinite; display: inline-block; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .detail-modal { width: 390px; background: #1A1A24; border-radius: 28px 28px 0 0; max-height: 92vh; overflow-y: auto; }
         .detail-header { padding: 24px 24px 16px; border-bottom: 1px solid #22222E; }
-        .detail-back { display: flex; align-items: center; gap: 6px; color: #5A5A72; font-size: 13px; font-weight: 600; cursor: pointer; margin-bottom: 16px; background: none; border: none; font-family: 'DM Sans', sans-serif; padding: 0; transition: color 0.2s; }
+        .detail-back { display: flex; align-items: center; gap: 6px; color: #5A5A72; font-size: 13px; font-weight: 600; cursor: pointer; margin-bottom: 16px; background: none; border: none; font-family: 'DM Sans', sans-serif; padding: 0; }
         .detail-back:hover { color: #F0F0F8; }
         .detail-title { color: #F0F0F8; font-size: 22px; font-weight: 700; line-height: 1.3; }
         .detail-title-done { text-decoration: line-through; color: #5A5A72; }
@@ -256,15 +250,10 @@ export default function TaskTracker() {
         .detail-footer { padding: 16px 24px 40px; display: flex; gap: 10px; }
         .btn-done-active { flex: 1; padding: 15px; border-radius: 14px; background: linear-gradient(135deg, #FF6B35, #FF85A1); border: none; color: white; font-size: 15px; font-weight: 700; font-family: 'DM Sans', sans-serif; cursor: pointer; }
         .btn-done-completed { flex: 1; padding: 15px; border-radius: 14px; background: #1A3A2A; border: 1px solid #2A4A3A; color: #6EE7B7; font-size: 15px; font-weight: 700; font-family: 'DM Sans', sans-serif; cursor: pointer; }
-        .btn-delete { padding: 15px 18px; border-radius: 14px; background: #2E1A1A; border: 1px solid #3A2A2A; color: #F87171; font-size: 16px; cursor: pointer; transition: background 0.2s; }
-        .btn-delete:hover { background: #3E2A2A; }
-        .btn-calendar { width: 100%; padding: 14px; border-radius: 14px; border: 1px solid #2A3A4A; background: #1A2A3A; color: #7ABAFF; font-size: 14px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; margin: 0 24px 12px; width: calc(100% - 48px); display: flex; align-items: center; justify-content: center; gap: 8px; }
-        .btn-calendar-synced { background: #1A3A2A; border-color: #2A4A3A; color: #6EE7B7; }
+        .btn-delete { padding: 15px 18px; border-radius: 14px; background: #2E1A1A; border: 1px solid #3A2A2A; color: #F87171; font-size: 16px; cursor: pointer; }
       `}</style>
 
-      {toast && (
-        <div className={`toast ${toast.type === "error" ? "toast-error" : "toast-success"}`}>{toast.msg}</div>
-      )}
+      {toast && <div className={`toast ${toast.type === "error" ? "toast-error" : "toast-success"}`}>{toast.msg}</div>}
 
       <div className="phone">
         <div className="header">
@@ -273,22 +262,10 @@ export default function TaskTracker() {
               <div className="greeting">Сегодня, {new Date().toLocaleDateString("ru-RU", { weekday: "long" })}</div>
               <div className="title">Мои задачи</div>
             </div>
-            {googleUser ? (
-              <button className="google-btn" onClick={handleLogout}>
-                <img className="google-avatar" src={googleUser.picture} alt="" />
-                <span>{googleUser.given_name}</span>
-              </button>
-            ) : (
-              <button className="google-btn" onClick={handleLogin}>
-                <svg width="16" height="16" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                </svg>
-                Войти
-              </button>
-            )}
+            <button className="user-btn" onClick={handleLogout}>
+              {user.photoURL && <img className="user-avatar" src={user.photoURL} alt="" />}
+              <span>{user.displayName?.split(" ")[0]}</span>
+            </button>
           </div>
           <div className="stats">
             <div className="stat">
@@ -300,18 +277,11 @@ export default function TaskTracker() {
               <div className="stat-label">Срочных</div>
             </div>
             <div className="stat">
-              <div className="stat-num">{tasks.filter(t => t.calendarEventId).length}</div>
-              <div className="stat-label" style={{ color: googleUser ? "#6EE7B7" : undefined }}>В Calendar</div>
+              <div className="stat-num">{tasks.filter(t => t.done).length}</div>
+              <div className="stat-label">Выполнено</div>
             </div>
           </div>
         </div>
-
-        {!googleUser && (
-          <div className="gcal-banner">
-            <span style={{ fontSize: 18 }}>📅</span>
-            <span className="gcal-banner-text">Войди в Google, чтобы синхронизировать с Calendar</span>
-          </div>
-        )}
 
         <div className="tabs">
           <button className={`tab-btn ${tab === "tasks" ? "tab-btn-active" : ""}`} onClick={() => setTab("tasks")}>Активные</button>
@@ -348,7 +318,7 @@ export default function TaskTracker() {
 
         <div className="task-list">
           {tab === "tasks" && activeTasks.length === 0 && (
-            <div className="empty"><div className="empty-icon">✅</div>Нет задач в этой категории</div>
+            <div className="empty"><div className="empty-icon">✅</div>Нет активных задач</div>
           )}
           {tab === "done" && doneTasks.length === 0 && (
             <div className="empty"><div className="empty-icon">🗂</div>Архив пуст</div>
@@ -358,12 +328,10 @@ export default function TaskTracker() {
             const c = cat(task.category);
             const p = pri(task.priority);
             const overdue = isOverdue(task.deadline);
-            const isSyncing = syncingId === task.id;
-            const isSynced = !!task.calendarEventId;
             return (
               <div key={task.id} className="task-card" onClick={() => setSelectedTask(task)}>
                 <div className="check-box" style={{ background: "transparent", border: "2px solid #3A3A50" }}
-                  onClick={e => { e.stopPropagation(); toggleDone(task.id); }}>
+                  onClick={e => { e.stopPropagation(); toggleDone(task); }}>
                   <div style={{ width: 8, height: 8, borderRadius: "50%", background: p?.color }} />
                 </div>
                 <div className="task-body">
@@ -377,16 +345,9 @@ export default function TaskTracker() {
                         {overdue ? "⚠ " : "📅 "}{formatDate(task.deadline)}
                       </span>
                     )}
-                    {isSynced && <span className="tag" style={{ background: "#6EE7B722", color: "#6EE7B7" }}>✓ Cal</span>}
                   </div>
                 </div>
                 <div className="task-actions" onClick={e => e.stopPropagation()}>
-                  {googleUser && (
-                    <button className={`icon-btn ${isSynced ? "icon-btn-synced" : ""}`}
-                      onClick={() => isSynced ? removeFromCalendar(task) : addToCalendar(task)}>
-                      {isSyncing ? <span className="spinning">⟳</span> : isSynced ? "✓" : "📅"}
-                    </button>
-                  )}
                   <button className="icon-btn" style={{ fontSize: 16 }} onClick={() => deleteTask(task.id)}>×</button>
                 </div>
               </div>
@@ -406,7 +367,7 @@ export default function TaskTracker() {
                 return (
                   <div key={task.id} className="task-card task-done-card" onClick={() => setSelectedTask(task)}>
                     <div className="check-box" style={{ background: p?.color, border: "none" }}
-                      onClick={e => { e.stopPropagation(); toggleDone(task.id); }}>
+                      onClick={e => { e.stopPropagation(); toggleDone(task); }}>
                       <span style={{ color: "#0F0F14", fontSize: 13, fontWeight: 700 }}>✓</span>
                     </div>
                     <div className="task-body">
@@ -418,7 +379,7 @@ export default function TaskTracker() {
                       </div>
                     </div>
                     <div className="task-actions" onClick={e => e.stopPropagation()}>
-                      <button className="restore-btn" onClick={() => toggleDone(task.id)}>↩ Вернуть</button>
+                      <button className="restore-btn" onClick={() => toggleDone(task)}>↩ Вернуть</button>
                       <button className="icon-btn" style={{ fontSize: 16 }} onClick={() => deleteTask(task.id)}>×</button>
                     </div>
                   </div>
@@ -441,8 +402,6 @@ export default function TaskTracker() {
               const c = cat(task.category);
               const p = pri(task.priority);
               const overdue = isOverdue(task.deadline);
-              const isSyncing = syncingId === task.id;
-              const isSynced = !!task.calendarEventId;
               return (
                 <>
                   <div className="detail-header">
@@ -450,7 +409,6 @@ export default function TaskTracker() {
                     <div className={`detail-title ${task.done ? "detail-title-done" : ""}`}>{task.text}</div>
                     {task.description ? <div className="detail-description">{task.description}</div> : null}
                   </div>
-
                   <div className="detail-body">
                     <div className="detail-row">
                       <span className="detail-row-label">Категория</span>
@@ -472,25 +430,9 @@ export default function TaskTracker() {
                         <span style={{ color: "#6EE7B7", fontSize: 14, fontWeight: 600 }}>✓ {formatDate(task.completedAt)}</span>
                       </div>
                     )}
-                    {isSynced && (
-                      <div className="detail-row">
-                        <span className="detail-row-label">Google Calendar</span>
-                        <span style={{ color: "#6EE7B7", fontSize: 14, fontWeight: 600 }}>✓ Добавлено</span>
-                      </div>
-                    )}
                   </div>
-
-                  {googleUser && !task.done && (
-                    <button className={`btn-calendar ${isSynced ? "btn-calendar-synced" : ""}`}
-                      onClick={() => isSynced ? removeFromCalendar(task) : addToCalendar(task)}>
-                      {isSyncing ? <span className="spinning">⟳</span> : "📅 "}
-                      {isSynced ? "Удалить из Google Calendar" : "Добавить в Google Calendar"}
-                    </button>
-                  )}
-
                   <div className="detail-footer">
-                    <button className={task.done ? "btn-done-completed" : "btn-done-active"}
-                      onClick={() => toggleDone(task.id)}>
+                    <button className={task.done ? "btn-done-completed" : "btn-done-active"} onClick={() => toggleDone(task)}>
                       {task.done ? "↩ Вернуть в активные" : "✓ Отметить выполненным"}
                     </button>
                     <button className="btn-delete" onClick={() => deleteTask(task.id)}>🗑</button>
