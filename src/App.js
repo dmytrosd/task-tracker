@@ -16,6 +16,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
+const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 
 const CATEGORIES = [
   { id: "work", label: "Работа", color: "#FF6B35", emoji: "💼" },
@@ -80,12 +81,24 @@ export default function TaskTracker() {
   const [newTask, setNewTask] = useState({ text: "", description: "", category: "work", priority: "medium", deadline: "" });
   const [tab, setTab] = useState("tasks");
   const [toast, setToast] = useState(null);
+  const [calendarToken, setCalendarToken] = useState(null);
+  const [syncingId, setSyncingId] = useState(null);
 
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
+
+  // Загружаем Google Identity Services
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+    return () => document.head.removeChild(script);
+  }, []);
 
   // Следим за авторизацией
   useEffect(() => {
@@ -114,6 +127,65 @@ export default function TaskTracker() {
   const handleLogout = async () => {
     await signOut(auth);
     showToast("Вышли из аккаунта");
+  };
+
+  const requestCalendarAccess = () => {
+    return new Promise((resolve, reject) => {
+      if (!window.google) { reject('GIS not loaded'); return; }
+      const client = window.google.accounts.oauth2.initTokenClient({
+        client_id: '1063965843339-2jc6ukp1ae5raild4e7rqq2pqns88fr2.apps.googleusercontent.com',
+        scope: CALENDAR_SCOPE,
+        callback: (response) => {
+          if (response.error) { reject(response.error); return; }
+          setCalendarToken(response.access_token);
+          resolve(response.access_token);
+        },
+      });
+      client.requestAccessToken();
+    });
+  };
+
+  const addToCalendar = async (task) => {
+    if (!task.deadline) { showToast('Добавь дедлайн к задаче', 'error'); return; }
+    setSyncingId(task.id);
+    try {
+      const token = calendarToken || await requestCalendarAccess();
+      const c = CATEGORIES.find(x => x.id === task.category);
+      const p = PRIORITIES.find(x => x.id === task.priority);
+      const event = {
+        summary: c?.emoji + ' ' + task.text,
+        description: (task.description ? task.description + '
+
+' : '') + 'Приоритет: ' + p?.label + '
+Категория: ' + c?.label,
+        start: { date: task.deadline },
+        end: { date: task.deadline },
+        colorId: task.priority === 'high' ? '11' : task.priority === 'medium' ? '5' : '2',
+      };
+      const res = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify(event),
+      });
+      if (res.status === 401) { setCalendarToken(null); showToast('Войди в Google Calendar снова', 'error'); return; }
+      const data = await res.json();
+      await updateDoc(doc(db, 'tasks', task.id), { calendarEventId: data.id });
+      showToast('Добавлено в Google Calendar! 📅');
+    } catch { showToast('Ошибка при добавлении', 'error'); }
+    finally { setSyncingId(null); }
+  };
+
+  const removeFromCalendar = async (task) => {
+    if (!task.calendarEventId) return;
+    setSyncingId(task.id);
+    try {
+      const token = calendarToken || await requestCalendarAccess();
+      await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events/' + task.calendarEventId,
+        { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
+      await updateDoc(doc(db, 'tasks', task.id), { calendarEventId: null });
+      showToast('Удалено из Google Calendar');
+    } catch { showToast('Ошибка при удалении', 'error'); }
+    finally { setSyncingId(null); }
   };
 
   const addTask = async () => {
@@ -207,6 +279,12 @@ export default function TaskTracker() {
         .task-actions { display: flex; flex-direction: column; gap: 6px; }
         .icon-btn { width: 28px; height: 28px; border-radius: 8px; background: #22222E; border: none; color: #5A5A72; cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.2s; }
         .icon-btn:hover { background: #2A2A38; color: #F0F0F8; }
+        .icon-btn-synced { background: #1A3A2A; color: #6EE7B7; }
+        .icon-btn-synced:hover { background: #2E1A24; color: #F87171; }
+        .btn-calendar { width: calc(100% - 48px); margin: 0 24px 12px; padding: 14px; border-radius: 14px; border: 1px solid #2A3A4A; background: #1A2A3A; color: #7ABAFF; font-size: 14px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .btn-calendar-synced { background: #1A3A2A; border-color: #2A4A3A; color: #6EE7B7; }
+        .spinning { animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .fab { position: fixed; bottom: 32px; right: calc(50% - 195px + 24px); width: 56px; height: 56px; border-radius: 18px; background: linear-gradient(135deg, #FF6B35, #FF85A1); border: none; color: white; font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 24px rgba(255,107,53,0.4); transition: transform 0.2s; z-index: 10; }
         .fab:active { transform: scale(0.93); }
         .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
@@ -348,6 +426,11 @@ export default function TaskTracker() {
                   </div>
                 </div>
                 <div className="task-actions" onClick={e => e.stopPropagation()}>
+                  <button className={"icon-btn " + (task.calendarEventId ? "icon-btn-synced" : "")}
+                    onClick={() => task.calendarEventId ? removeFromCalendar(task) : addToCalendar(task)}
+                    title={task.calendarEventId ? "Удалить из Calendar" : "Добавить в Calendar"}>
+                    {syncingId === task.id ? <span className="spinning">⟳</span> : task.calendarEventId ? "✓" : "📅"}
+                  </button>
                   <button className="icon-btn" style={{ fontSize: 16 }} onClick={() => deleteTask(task.id)}>×</button>
                 </div>
               </div>
@@ -431,6 +514,13 @@ export default function TaskTracker() {
                       </div>
                     )}
                   </div>
+                  {!task.done && (
+                    <button className={"btn-calendar " + (task.calendarEventId ? "btn-calendar-synced" : "")}
+                      onClick={() => task.calendarEventId ? removeFromCalendar(task) : addToCalendar(task)}>
+                      {syncingId === task.id ? <span className="spinning">⟳</span> : "📅 "}
+                      {task.calendarEventId ? "Удалить из Google Calendar" : "Добавить в Google Calendar"}
+                    </button>
+                  )}
                   <div className="detail-footer">
                     <button className={task.done ? "btn-done-completed" : "btn-done-active"} onClick={() => toggleDone(task)}>
                       {task.done ? "↩ Вернуть в активные" : "✓ Отметить выполненным"}
